@@ -15,7 +15,7 @@
 
 # ImageMaskDatasetGenerator.py
 # 2023/08/20 to-arai
-
+# 2024/05/10 Fixed spelling errors.
 import os
 import shutil
 import numpy as np
@@ -194,7 +194,7 @@ class ImageMaskDatasetGenerator:
         #print("--- target_numbers_len  {}  {}".format(len(target_numbers), target_numbers) )
         for i in target_numbers:
           SELECTED_IMAGES.append(IMAGES[i])
-          SELECTED_MASKS.append(ConfigParser.MASKS[i])
+          SELECTED_MASKS.append(MASKS[i])
         
         (X, Y) = self.convert(SELECTED_IMAGES, SELECTED_MASKS)
         yield (X, Y)
@@ -202,7 +202,7 @@ class ImageMaskDatasetGenerator:
 
   def convert(self, IMAGES, MASKS):
     ilen = len(IMAGES)
-    mlen = len(ConfigParser.MASKS)
+    mlen = len(MASKS)
     X = np.zeros((ilen, self.image_height, self.image_width, self.image_channels), dtype=np.uint8)
     Y = np.zeros((mlen, self.image_height, self.image_width, 1), dtype=bool)
     for i in range(ilen):

@@ -309,9 +309,11 @@ class TensorflowUNet(TensorflowModel):
 
     # outouts
     # 2024/03/28
-    activation = "softmax"
-    if num_classes == 1:
-      activation = "sigmoid"
+    final_activation = self.config.get(ConfigParser.MODEL, "final_activation", dvalue="sigmoid")
+    activation ="sigmoid"
+    if final_activation:
+      activation = final_activation
+
     print("--- final activation {}".format(activation))
     outputs = tf.keras.layers.Conv2D(num_classes, (1, 1), activation=activation)(c)
 

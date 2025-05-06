@@ -66,16 +66,19 @@ from tensorflow.keras.metrics import BinaryAccuracy
 from tensorflow.keras.metrics import SparseCategoricalAccuracy
 
 #from tensorflow.keras.metrics import Mean
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 
 from tensorflow.python.framework import random_seed
-from EpochChangeCallback import EpochChangeCallback
-from GrayScaleImageWriter import GrayScaleImageWriter
-from ImageMaskDatasetGenerator import ImageMaskDatasetGenerator
+#from EpochChangeCallback import EpochChangeCallback
+#from GrayScaleImageWriter import GrayScaleImageWriter
 from ImageMaskDataset import ImageMaskDataset
 from BaseImageMaskDataset import BaseImageMaskDataset
 from NormalizedImageMaskDataset import NormalizedImageMaskDataset
+
+from ImageMaskDatasetGenerator import ImageMaskDatasetGenerator
+from RGB2GrayscaleImageMaskDataset import RGB2GrayscaleImageMaskDataset
+
+
+#from TensorflowImageMaskDataset import TensorflowImageMaskDataset
 
 from SeedResetCallback       import SeedResetCallback
 from losses import dice_coef, basnet_hybrid_loss, sensitivity, specificity
@@ -128,6 +131,7 @@ class TensorflowModel:
     image_height   = self.config.get(ConfigParser.MODEL, "image_height")
     image_width    = self.config.get(ConfigParser.MODEL, "image_width")
     image_channels = self.config.get(ConfigParser.MODEL, "image_channels")
+
     num_classes    = self.config.get(ConfigParser.MODEL, "num_classes")
    
     self.num_classes = num_classes
@@ -141,6 +145,12 @@ class TensorflowModel:
     activatation    = self.config.get(ConfigParser.MODEL, "activation", dvalue="relu")
     self.activation = eval(activatation)
     print("=== activation {}".format(activatation))
+    
+    # 2024/04/18
+    self.mask_colors= self.config.get(ConfigParser.MASK, "mask_colors", dvalue=[])
+    self.grayscaling = self.config.get(ConfigParser.MASK, "grayscaling", dvalue=None)
+    
+    self.create_gray_map()
 
     self.model     = self.create(num_classes, image_height, image_width, image_channels, 
                             base_filters = base_filters, num_layers = num_layers)  
@@ -198,7 +208,19 @@ class TensorflowModel:
       self.model.summary()
     self.show_history = self.config.get(ConfigParser.TRAIN, "show_history", dvalue=False)
 
+  def create_gray_map(self,):
+     self.gray_map = []
+     if self.grayscaling !=None and len(self.mask_colors)>0:
+       (IR, IG, IB) = self.grayscaling
+       for color in self.mask_colors:
+         (b, g, r) = color
+         gray = int(IR* r + IG * g + IB * b)
+         self.gray_map += [gray]
 
+  def get_gray_map(self):
+    return self.gray_map
+  
+  
   def create(self, num_classes, image_height, image_width, image_channels,
             base_filters = 16, num_layers = 5):
   
@@ -206,593 +228,7 @@ class TensorflowModel:
     print("Input image_height {} image_width {} image_channels {}".format(image_height, image_width, image_channels))
     raise Exception("Please define your own Model class which inherits this TensorflowModel class")
   
-  def create_dirs(self, eval_dir, model_dir ):
-    dt_now = str(datetime.datetime.now())
-    dt_now = dt_now.replace(":", "_").replace(" ", "_")
-    create_backup = self.config.get(ConfigParser.TRAIN, "create_backup", False)
-    if os.path.exists(eval_dir):
-      # if create_backup flag is True, move previous eval_dir to *_bak  
-      if create_backup:
-        moved_dir = eval_dir +"_" + dt_now + "_bak"
-        shutil.move(eval_dir, moved_dir)
-        print("--- Moved to {}".format(moved_dir))
-      else:
-        shutil.rmtree(eval_dir)
 
-    if not os.path.exists(eval_dir):
-      os.makedirs(eval_dir)
-
-    if os.path.exists(model_dir):
-      # if create_backup flag is True, move previous model_dir to *_bak  
-      if create_backup:
-        moved_dir = model_dir +"_" + dt_now + "_bak"
-        shutil.move(model_dir, moved_dir)
-        print("--- Moved to {}".format(moved_dir))      
-      else:
-        shutil.rmtree(model_dir)
-    if not os.path.exists(model_dir):
-      os.makedirs(model_dir)
-
-  def count_files(self, dir):
-     count = 0
-     if os.path.exists(dir):
-       count = sum(len(files) for _, _, files in os.walk(dir))
-     return count
-
-  def create_callbacks(self):
-    patience   = self.config.get(ConfigParser.TRAIN, "patience")
-    weight_filepath   = os.path.join(self.model_dir, self.BEST_MODEL_FILE)
-    #Modified to correct "save_weights_only" name
-    save_weights_only = self.config.get(ConfigParser.TRAIN, "save_weights_only", dvalue=False)
-    dmetrics    = ["accuracy", "val_accuracy"]
-    metrics    = self.config.get(ConfigParser.TRAIN, "metrics", dvalue=dmetrics)
-
-    reducer  = None
-    lr_reducer = self.config.get(ConfigParser.TRAIN, "learning_rate_reducer", dvalue=False )
-    if lr_reducer:
-      lr_patience = int(patience/2)
-      if lr_patience == 0:
-        lr_patience = 5
-      lr_patience = lr_reducer = self.config.get(ConfigParser.TRAIN, "reducer_patience", dvalue= lr_patience)
-      reducer = ReduceLROnPlateau(
-                        monitor = 'val_loss',
-                        factor  = 0.1,
-                        patience= lr_patience,
-                        min_lr  = 0.0)
-
-    early_stopping = EarlyStopping(patience=patience, verbose=1)
-    check_point    = ModelCheckpoint(weight_filepath, verbose=1, 
-                                     save_best_only    = True,
-                                     save_weights_only = save_weights_only)
-    self.epoch_change   = EpochChangeCallback(self.eval_dir, metrics)
-    
-    if reducer:
-      callbacks = [early_stopping, check_point, self.epoch_change, reducer]
-    else:
-      callbacks = [early_stopping, check_point, self.epoch_change]
-   
-    seedreset_callback = self.config.get(ConfigParser.TRAIN, "seedreset_callback", dvalue=False) 
-    if seedreset_callback:
-      print("=== Added SeedResetCallback")
-      seedercb = SeedResetCallback(seed=self.seed)
-      callbacks += [seedercb]
-    return callbacks
-
-  def train(self):
-    print("==== train")
-    self.batch_size = self.config.get(ConfigParser.TRAIN, "batch_size")
-    self.epochs     = self.config.get(ConfigParser.TRAIN, "epochs")
-    self.eval_dir   = self.config.get(ConfigParser.TRAIN, "eval_dir")
-    self.model_dir  = self.config.get(ConfigParser.TRAIN, "model_dir")
-
-    self.create_dirs(self.eval_dir, self.model_dir)
-    # Copy current config_file to model_dir
-    shutil.copy2(self.config_file, self.model_dir)
-    print("-- Copied {} to {}".format(self.config_file, self.model_dir))
-    
-    self.callbacks = self.create_callbacks()
-
-    # Create a DatasetClass
-    DatasetClass = eval(self.config.get(ConfigParser.DATASET, "datasetclass", dvalue="ImageMaskDataset"))
-    dataset = DatasetClass(self.config_file)
-    print("=== DatasetClass {}".format(dataset))
-    generator = self.config.get(ConfigParser.MODEL, "generator", dvalue=False)
-    if generator == False:      
-      print("=== Creating TRAIN dataset")
-      train_x, train_y = dataset.create(dataset=ConfigParser.TRAIN)
-      l_x_train = len(train_x)
-      l_y_train = len(train_y)
-      print("=== Created TRAIN dataset x_train: size {} y_train : size {}".format(l_x_train, l_y_train))
-
-      print("=== Creating EVAL dataset")
-      eval_x,  eval_y  = dataset.create(dataset=ConfigParser.EVAL)
-
-      l_eval_x = len(eval_x) 
-      l_eval_y = len(eval_y)
-      if l_eval_x >0 and l_eval_y > 0:
-        print("=== Created EVAL dataset eval_x: size {} eval_y : size {}".format(l_eval_x, l_eval_y))
-        history = self.train_by_pre_splitted(train_x, train_y, eval_x, eval_y) 
-      else:
-        history = self.train_after_splitting(train_x, train_y) 
-    else:
-      # generator is True
-      train_gen = ImageMaskDatasetGenerator(config_file, dataset=ConfigParser.TRAIN)
-      train_generator = train_gen.generate()
-      valid_gen = ImageMaskDatasetGenerator(config_file, dataset=ConfigParser.EVAL)
-      valid_generator = valid_gen.generate()
-
-      history = self.train_by_generator(train_generator, valid_generator)
-
-    self.epoch_change.save_eval_graphs()
-    self.save_history(history)
-
-  def save_history(self, history): 
-    #print("--- history {}".format(history.history))
-    jstring = str(history.history)
-    with open(self.HISTORY_JSON, 'wt') as f:
-      json.dump(jstring, f, ensure_ascii=False,  indent=4, sort_keys=True, separators=(',', ': '))
-      print("=== Save {}".format(self.HISTORY_JSON))
-
-  def train_by_pre_splitted(self, train_x, train_y, valid_x, valid_y): 
-      print("=== train_by_pre_splitted ")
-      print("--- valid_x len {}".format(len(valid_x)))
-      print("--- valid_y len {}".format(len(valid_y)))
-      print("=== Start model.fit ")
-      history = self.model.fit(train_x, train_y, 
-                    batch_size= self.batch_size, 
-                    epochs    = self.epochs, 
-                    validation_data= (valid_x, valid_y),
-                    shuffle   = False,
-                    callbacks = self.callbacks,
-                    verbose   = 1)
-      return history
-   
-  def train_after_splitting(self, x_train, y_train, ):
-      print("=== train_after_splitting ")
-
-      dataset_splitter = self.config.get(ConfigParser.TRAIN, "dataset_splitter", dvalue=False) 
-      print("=== Dataset_splitter {}".format(dataset_splitter))
-   
-      if dataset_splitter:
-          """
-          Split master dataset (x_train, y_train) into (train_x, train_y) and (valid_x, valid_y)
-          This will help to improve the reproducibility of the model.
-          """
-          print("--- split the master train dataset")
-          train_size = int(0.8 * len(x_train)) 
-          train_x = x_train[:train_size]
-          train_y = y_train[:train_size]
-          valid_x = x_train[train_size:]
-          valid_y = y_train[train_size:]
-
-          print("--- split the master into train(0.8) and valid(0.2)")
-          print("=== Start model.fit ")
-          history = self.model.fit(train_x, train_y, 
-                    batch_size= self.batch_size, 
-                    epochs    = self.epochs, 
-                    validation_data= (valid_x, valid_y),
-                    shuffle   = False,
-                    callbacks = self.callbacks,
-                    verbose   = 1)
-      else:
-          print("--- Split train datasett to  train-subset and valid-subset by validation_split=0.2 ")
-          # By the parameter setting : validation_split=0.2,
-          # x_train and y_train will be split into real_train (0.8) and 0.2 real_valid (0.2) 
-          print("=== Start model.fit ")
-          history = self.model.fit(x_train, y_train, 
-                    validation_split=0.2, 
-                    batch_size = self.batch_size, 
-                    epochs     = self.epochs, 
-                    shuffle    = False,
-                    callbacks  = self.callbacks,
-                    verbose    = 1)
-      return history
- 
-  def train_by_generator(self, train_generator, valid_generator):
-      print("=== train_by_generator")
-      print("--- Use the train and valid gnerators to fit.")
-      # train and valid dataset will be used by train_generator and valid_generator respectively
-      steps_per_epoch  = self.config.get(ConfigParser.TRAIN, "steps_per_epoch",  dvalue=400)
-      validation_steps = self.config.get(ConfigParser.TRAIN, "validation_steps", dvalue=800)
-  
-      history = self.model.fit(train_generator, 
-                    steps_per_epoch = steps_per_epoch,
-                    epochs          = self.epochs, 
-                    validation_data = valid_generator,
-                    validation_steps= validation_steps,
-                    shuffle         = False,
-                    callbacks       = self.callbacks,
-                    verbose         = 1)
-      return history
-  
-
-  def load_model(self) :
-    rc = False
-    if  not self.model_loaded:    
-      model_dir  = self.config.get(ConfigParser.TRAIN, "model_dir")
-      weight_filepath = os.path.join(model_dir, self.BEST_MODEL_FILE)
-      if os.path.exists(weight_filepath):
-        self.model.load_weights(weight_filepath)
-        self.model_loaded = True
-        print("=== Loaded a weight_file {}".format(weight_filepath))
-        rc = True
-      else:
-        message = "Not found a weight_file " + weight_filepath
-        raise Exception(message)
-    else:
-      pass
-      #print("== Already loaded a weight file.")
-    return rc
-  
-  def infer(self, input_dir, output_dir, expand=True):
-    print("=== infer")
-    colorize = self.config.get(ConfigParser.SEGMENTATION, "colorize", dvalue=False)
-    black    = self.config.get(ConfigParser.SEGMENTATION, "black",    dvalue="black")
-    white    = self.config.get(ConfigParser.SEGMENTATION, "white",    dvalue="white")
-    blursize = self.config.get(ConfigParser.SEGMENTATION, "blursize", dvalue=None)
-    writer       = GrayScaleImageWriter(colorize=colorize, black=black, white=white)
-
-    image_files  = glob.glob(input_dir + "/*.png")
-    image_files += glob.glob(input_dir + "/*.jpg")
-    image_files += glob.glob(input_dir + "/*.tif")
-    image_files += glob.glob(input_dir + "/*.bmp")
-
-    width        = self.config.get(ConfigParser.MODEL, "image_width")
-    height       = self.config.get(ConfigParser.MODEL, "image_height")
-    self.num_classes  = self.config.get(ConfigParser.MODEL, "num_classes")
-
-    self.mask_channels = self.config.get(ConfigParser.MASK, "mask_channels")
-    self.mask_colors   = self.config.get(ConfigParser.MASK, "mask_colors")
-    merged_dir   = None
-    try:
-      merged_dir = self.config.get(ConfigParser.INFER, "merged_dir")
-      if os.path.exists(merged_dir):
-        shutil.rmtree(merged_dir)
-      if not os.path.exists(merged_dir):
-        os.makedirs(merged_dir)
-    except:
-      traceback.print_exc()
-
-    for image_file in image_files:
-      print("--- image_file {}".format(image_file))
-
-      basename = os.path.basename(image_file)
-      name     = basename.split(".")[0]    
-      img      = cv2.imread(image_file)
-      # img = BGR format
-      h = img.shape[0]
-      w = img.shape[1]
-      # Any way, we have to resize input image to match the input size of our TensorflowUNet model.
-      img         = cv2.resize(img, (width, height))
-      predictions = self.predict([img], expand=expand)
-      prediction  = predictions[0]
-      image       = prediction[0]    
-      # Resize the predicted image to be the original image size (w, h), and save it as a grayscale image.
-      # Probably, this is a natural way for all humans. 
-      if self.num_classes == 1:
-        mask = writer.save_resized(image, (w, h), output_dir, name)
-      else:
-        # mask is PIL image
-        print("----infered mask shape {}".format(image.shape))
-        if len(self.mask_colors) >0:
-          mask = self.colorize_mask(image, w, h)
-          output_filepath = os.path.join(output_dir, basename)
-          cv2.imwrite(output_filepath, mask)
-          print("--- Saved {}".format(output_filepath))
-      if merged_dir !=None:
-        img   = cv2.resize(img, (w, h))
-        if blursize:
-          img   = cv2.blur(img, blursize)
-        img += mask
-        merged_file = os.path.join(merged_dir, basename)
-        cv2.imwrite(merged_file, img)
-
-  def colorize_mask_one(self, mask, color=(255, 255, 255), threshold=4):
-    h, w,  = mask.shape
-    rgb = np.zeros((w, h, 3), np.uint8)
-    
-    for i in range(w):
-      for j in range(h):
-        c = mask[i, j] 
-        if c > threshold:
-          rgb[i, j] = color
-    return rgb
-    
-  def colorize_mask(self, image, w, h,):
-      # Create an empty rgb (3-channels) background
-      rgb_background = np.zeros((w, h, 3), np.uint8)
-
-      for i in range(self.num_classes):
-        img   = image[:, :, i]
-
-        img  = img * 255
-        img  = img.astype(np.uint8)
-        color = self.mask_colors[i]
-        img = img.astype(np.uint8)
-
-        print("--- shape {}".format(img.shape))
-        rgb_mask = self.colorize_mask_one(img, color=color)
-        # Overlapping each mask rgb to the background 
-        
-        #pilimage = Image.fromarray(img)
-        #rgb_mask = ImageOps.colorize(pilimage, black=(0,0,0), white=(color))
-
-        rgb_background += rgb_mask
-        #rgb_background += img
-
-      rgb_background = cv2.resize(rgb_background, (w, h))
-      return rgb_background
-           
-  def predict(self, images, expand=True):
-    self.load_model()
-    predictions = []
-    for image in images:
-      #print("=== Input image shape {}".format(image.shape))
-      if expand:
-        image = np.expand_dims(image, 0)
-      pred = self.model.predict(image)
-      predictions.append(pred)
-    return predictions    
-
-  def pil2cv(self, image):
-    new_image = np.array(image, dtype=np.uint8)
-    if new_image.ndim == 2: 
-        pass
-    elif new_image.shape[2] == 3: 
-        new_image = cv2.cvtColor(new_image, cv2.COLOR_RGB2BGR)
-    elif new_image.shape[2] == 4: 
-        new_image = cv2.cvtColor(new_image, cv2.COLOR_RGBA2BGRA)
-    return new_image
-
-
-  # 1 Split the original image to some tiled-images
-  # 2 Infer segmentation regions on those images 
-  # 3 Merge detected regions into one image
-  # Added MARGIN to cropping 
-  def infer_tiles(self, input_dir, output_dir, expand=True):    
-    image_files  = glob.glob(input_dir + "/*.png")
-    image_files += glob.glob(input_dir + "/*.jpg")
-    image_files += glob.glob(input_dir + "/*.tif")
-    image_files += glob.glob(input_dir + "/*.bmp")
-    MARGIN       = self.config.get(ConfigParser.TILEDINFER, "overlapping", dvalue=0)
-    print("MARGIN {}".format(MARGIN))
-    
-    merged_dir   = None
-    try:
-      merged_dir = self.config.get(ConfigParser.TILEDINFER, "merged_dir")
-      if os.path.exists(merged_dir):
-        shutil.rmtree(merged_dir)
-      if not os.path.exists(merged_dir):
-        os.makedirs(merged_dir)
-    except:
-      pass
-
-    width  = self.config.get(ConfigParser.MODEL, "image_width")
-    height = self.config.get(ConfigParser.MODEL, "image_height")
-
-    split_size  = self.config.get(ConfigParser.TILEDINFER, "split_size", dvalue=width)
-    print("---split_size {}".format(split_size))
-    
-    tiledinfer_debug = self.config.get(ConfigParser.TILEDINFER, "debug", dvalue=False)
-    tiledinfer_debug_dir = "./tiledinfer_debug_dir"
-    if tiledinfer_debug:
-      if os.path.exists(tiledinfer_debug_dir):
-        shutil.rmtree(tiledinfer_debug_dir)
-      if not os.path.exists(tiledinfer_debug_dir):
-        os.makedirs(tiledinfer_debug_dir)
- 
-    # Please note that the default setting is "True".
-    bitwise_blending  = self.config.get(ConfigParser.TILEDINFER, "bitwise_blending", dvalue=True)
-    bgcolor = self.config.get(ConfigParser.TILEDINFER, "background", dvalue=0)  
-
-    for image_file in image_files:
-      image   = Image.open(image_file)
-      w, h    = image.size
-
-      # Resize the image to the input size (width, height) of our UNet model.      
-      resized = image.resize((width, height))
-
-      # Make a prediction to the whole image not tiled image of the image_file 
-      cv_image= self.pil2cv(resized)
-      predictions = self.predict([cv_image], expand=expand)
-          
-      prediction  = predictions[0]
-      whole_mask  = prediction[0]    
-
-      #whole_mask_pil = self.mask_to_image(whole_mask)
-      #whole_mask  = self.pil2cv(whole_mask_pil)
-      whole_mask  = self.normalize_mask(whole_mask)
-      # 2024/03/30
-      whole_mask  = self.binarize(whole_mask)
-
-      whole_mask  = cv2.resize(whole_mask, (w, h))
-                
-      basename = os.path.basename(image_file)
-      self.tiledinfer_log = None
-      
-      if tiledinfer_debug and os.path.exists(tiledinfer_debug_dir):
-        tiled_images_output_dir = os.path.join(tiledinfer_debug_dir, basename + "/images")
-        tiled_masks_output_dir  = os.path.join(tiledinfer_debug_dir, basename + "/masks")
-        if os.path.exists(tiled_images_output_dir):
-          shutil.rmtree(tiled_images_output_dir)
-        if not os.path.exists(tiled_images_output_dir):
-          os.makedirs(tiled_images_output_dir)
-        if os.path.exists(tiled_masks_output_dir):
-          shutil.rmtree(tiled_masks_output_dir)
-        if not os.path.exists(tiled_masks_output_dir):
-          os.makedirs(tiled_masks_output_dir)
-         
-      w, h  = image.size
-
-      vert_split_num  = h // split_size
-      if h % split_size != 0:
-        vert_split_num += 1
-
-      horiz_split_num = w // split_size
-      if w % split_size != 0:
-        horiz_split_num += 1
-      background = Image.new("L", (w, h), bgcolor)
-
-      # Tiled image segmentation
-      for j in range(vert_split_num):
-        for i in range(horiz_split_num):
-          left  = split_size * i
-          upper = split_size * j
-          right = left  + split_size
-          lower = upper + split_size
-
-          if left >=w or upper >=h:
-            continue 
-      
-          left_margin  = MARGIN
-          upper_margin = MARGIN
-          if left-MARGIN <0:
-            left_margin = 0
-          if upper-MARGIN <0:
-            upper_margin = 0
-
-          right_margin = MARGIN
-          lower_margin = MARGIN 
-          if right + right_margin > w:
-            right_margin = 0
-          if lower + lower_margin > h:
-            lower_margin = 0
-
-          cropbox = (left  - left_margin,  upper - upper_margin, 
-                     right + right_margin, lower + lower_margin )
-          
-          # Crop a region specified by the cropbox from the whole image to create a tiled image segmentation.      
-          cropped = image.crop(cropbox)
-
-          # Get the size of the cropped image.
-          cw, ch  = cropped.size
-
-          # Resize the cropped image to the model image size (width, height) for a prediction.
-          cropped = cropped.resize((width, height))
-          if tiledinfer_debug:
-            #line = "image file {}x{} : x:{} y:{} width: {} height:{}\n".format(j, i, left, upper, cw, ch)
-            #print(line)            
-            cropped_image_filename = str(j) + "x" + str(i) + ".jpg"
-            cropped.save(os.path.join(tiled_images_output_dir, cropped_image_filename))
-
-          cvimage  = self.pil2cv(cropped)
-          predictions = self.predict([cvimage], expand=expand)
-          
-          prediction  = predictions[0]
-          mask        = prediction[0]    
-          mask        = self.mask_to_image(mask)
-          # Resize the mask to the same size of the corresponding the cropped_size (cw, ch)
-          mask        = mask.resize((cw, ch))
-
-          right_position = left_margin + width
-          if right_position > cw:
-             right_position = cw
-
-          bottom_position = upper_margin + height
-          if bottom_position > ch:
-             bottom_position = ch
-
-          # Excluding margins of left, upper, right and bottom from the mask. 
-          mask         = mask.crop((left_margin, upper_margin, 
-                                  right_position, bottom_position)) 
-          iw, ih = mask.size
-          if tiledinfer_debug:
-            #line = "mask  file {}x{} : x:{} y:{} width: {} height:{}\n".format(j, i,  left, upper, iw, ih)
-            #print(line)
-            cropped_mask_filename = str(j) + "x" + str(i) + ".jpg"
-            mask.save(os.path.join(tiled_masks_output_dir , cropped_mask_filename))
-          # Paste the tiled mask to the background. 
-          background.paste(mask, (left, upper))
-
-      basename = os.path.basename(image_file)
-      output_file = os.path.join(output_dir, basename)
-      cv_background = self.pil2cv(background)
-
-      bitwised = None
-      if bitwise_blending:
-        # Blend the non-tiled whole_mask and the tiled-backcround
-        bitwised = cv2.bitwise_and(whole_mask, cv_background)
-        # 2024/03/30
-        bitwised = self.binarize(bitwised)
-        bitwized_output_file =  os.path.join(output_dir, basename)
-        cv2.imwrite(bitwized_output_file, bitwised)
-      else:
-        # Save the tiled-background. 
-        background.save(output_file)
-
-      print("=== Saved outputfile {}".format(output_file))
-      if merged_dir !=None:
-        img   = np.array(image)
-        img   = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-        #2024/03/10
-        if bitwise_blending:
-          mask = bitwised
-        else:
-          mask  = cv_background 
- 
-        mask  = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-        img += mask
-        merged_file = os.path.join(merged_dir, basename)
-        cv2.imwrite(merged_file, img)     
-
-  def mask_to_image(self, data, factor=255.0, format="RGB"):
-    h = data.shape[0]
-    w = data.shape[1]
-    data = data*factor
-    data = data.reshape([w, h])
-    data = data.astype(np.uint8)
-    image = Image.fromarray(data)
-    image = image.convert(format)
-    return image
-  
-  def normalize_mask(self, data, factor=255.0):
-    h = data.shape[0]
-    w = data.shape[1]
-    data = data*factor
-    data = data.reshape([w, h])
-    data = data.astype(np.uint8)
-    return data
-
-  #2024/03/30
-  def binarize(self, mask):
-    if self.num_classes == 1:
-      #algorithm = cv2.THRESH_OTSU
-      #_, mask = cv2.threshold(mask, 0, 255, algorithm)
-      if self.tiledinfer_binarize:
-        #algorithm = "cv2.THRESH_OTSU"
-        #print("--- tiled_infer: binarize {}".format(algorithm))
-        #algorithm = eval(algorithm)
-        #_, mask = cv2.threshold(mask, 0, 255, algorithm)
-        mask[mask< self.tiledinfer_threshold] =   0
-        mask[mask>=self.tiledinfer_threshold] = 255
-    else:
-      pass
-    return mask     
-  
-  def evaluate(self, x_test, y_test): 
-    self.load_model()
-    batch_size = self.config.get(ConfigParser.EVAL, "batch_size", dvalue=4)
-    print("=== evaluate batch_size {}".format(batch_size))
-    scores = self.model.evaluate(x_test, y_test, 
-                                batch_size = batch_size,
-                                verbose = 1)
-    test_loss     = str(round(scores[0], 4))
-    test_accuracy = str(round(scores[1], 4))
-    print("Test loss    :{}".format(test_loss))     
-    print("Test accuracy:{}".format(test_accuracy))
-    # Added the following lines to write the evaluation result.
-    loss    = self.config.get(ConfigParser.MODEL, "loss")
-    metrics = self.config.get(ConfigParser.MODEL, "metrics")
-    metric = metrics[0]
-    evaluation_result_csv = "./evaluation.csv"    
-    with open(evaluation_result_csv, "w") as f:
-       metrics = self.model.metrics_names
-       for i, metric in enumerate(metrics):
-         score = str(round(scores[i], 4))
-         line  = metric + "," + score
-         print("--- Evaluation  metric:{}  score:{}".format(metric, score))
-         f.writelines(line + "\n")     
-    print("--- Saved {}".format(evaluation_result_csv))
 
   def inspect(self, image_file='./model.png', summary_file="./summary.txt"):
     # Please download and install graphviz for your OS

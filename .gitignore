@@ -3,10 +3,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# 2024/04/13
-dataset/Pap-Smear/severe_dysplastic/train/
-dataset/Pap-Smear/severe_dysplastic/valid/
+# 2025/05/07
+dataset/
 projects/*/*/models/
+projects/*/*/epoch_change_infer/
 
 # C extensions
 *.so

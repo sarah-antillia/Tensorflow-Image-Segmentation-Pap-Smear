@@ -30,11 +30,12 @@ from PIL import Image, ImageOps
 
 class GrayScaleImageWriter:
 
-  def __init__(self, image_format=".jpg", colorize=False, black="black", white="green"):
+  def __init__(self, image_format=".jpg", colorize=False, black="black", white="green", verbose=True):
     self.image_format = image_format
     self.colorize     = colorize
     self.black   = black
     self.white   = white
+    self.verbose = verbose
 
   def mask_to_image(self, data, factor=255.0):
     h = data.shape[0]
@@ -50,21 +51,28 @@ class GrayScaleImageWriter:
     image = self.mask_to_image(data, factor=factor)
     image_filepath = os.path.join(output_dir, name + self.image_format)
     image.save(image_filepath)
-    print("=== Saved {}". format(image_filepath))
-
+    if self.verbose:
+      print("=== Saved {}". format(image_filepath))
 
   def save_resized(self, data, resized, output_dir, name, factor=255.0):
     image = self.mask_to_image(data, factor=factor)
+
     image_filepath = os.path.join(output_dir, name + self.image_format)
-    print("== resized to {}".format(resized))
+
+    if self.verbose:
+      print("== resized to {}".format(resized))
     image = image.resize(resized)
+    #print("--- colorize {}{}".format(self.colorize, image_filepath))
+
     if self.colorize:
        #2024/04/13 Added the following two lines
        if image.mode != "L":
          image = image.convert("L")
+       #print("-----colorized----")
        image = ImageOps.colorize(image, black=self.black, white=self.white)
     image.save(image_filepath)
-    print("=== Saved {}". format(image_filepath))
+    if self.verbose:
+      print("=== Saved {}". format(image_filepath))
     return np.array(image)
     
   

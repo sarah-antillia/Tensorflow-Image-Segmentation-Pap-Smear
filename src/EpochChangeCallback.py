@@ -21,6 +21,7 @@
 # encodig: utf-8
 
 import os
+import sys
 import shutil
 import traceback
 import tensorflow as tf
@@ -103,7 +104,16 @@ class EpochChangeCallback(tf.keras.callbacks.Callback):
  
     except Exception as ex:
         traceback.print_exc()
+    self.terminate() 
 
   def save_eval_graphs(self):
     self.lineGraph.plot(self.train_losses_file)
     self.lineGraph.plot(self.train_accuracies_file)
+  # 2024/08/10
+  def terminate(self):
+    break_training = "./break_training"
+    if os.path.exists(break_training):
+       print("----- Found break_training file")
+       sys.exit()
+       
+

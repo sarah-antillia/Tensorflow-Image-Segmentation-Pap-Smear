@@ -16,7 +16,7 @@
 #
 # DatasetStatistics.py
 
-# 2024/02/01 : Toshiyuki Arai antillia.com
+# 2025/02/23 : Toshiyuki Arai antillia.com
 
 import glob
 import os
@@ -45,7 +45,9 @@ class DatasetStatistics:
         fullpath = root_dir + "/" +  sub_dir + "/" + subsub_dir
         if subsub_dir == "masks":
            continue
-        files = glob.glob(fullpath + "/*.jpg")
+        files = glob.glob(fullpath + "/*.png")
+        files += glob.glob(fullpath + "/*.jpg")
+        
         count = len(files)
         self.y.append(count)
 
